@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>Hand Demo – Camera Background + Minimal 3D</title>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+
+<style>
+html,body{
+  margin:0; padding:0;
+  width:100%; height:100%;
+  background:#000;
+  overflow:hidden;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+#wrap{
+  position:relative;
+  width:100vw; height:100vh;
+  background:#000;
+}
+#video{
+  position:absolute; inset:0;
+  width:100%; height:100%;
+  object-fit:cover;
+  background:#000;
+  display:none;           /* 初期は黒背景 */
+  z-index:0;
+}
+#renderCanvas{
+  position:absolute; inset:0;
+  width:100%; height:100%;
+  z-index:1;
+  touch-action:none;
+  background:transparent;
+}
+#ui{
+  position:fixed;
+  left:8px; right:8px; bottom:14px;
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  z-index:5;
+}
+#ui .row{ display:flex; gap:10px; }
+button{
+  font-size:14px;
+  padding:10px 14px;
+  border-radius:10px;
+  border:1px solid rgba(255,255,255,0.28);
+  background:rgba(0,0,0,0.55);
+  color:#fff;
+}
+#badge{
+  position:fixed;
+  top:10px; left:10px;
+  z-index:6;
+  padding:6px 10px;
+  border-radius:10px;
+  font-size:12px;
+  color:#fff;
+  background:rgba(0,0,0,0.45);
+  border:1px solid rgba(255,255,255,0.2);
+}
+</style>
+</head>
+
+<body>
+<div id="wrap">
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="renderCanvas"></canvas>
+
+  <div id="badge">Camera: OFF / GLB: animetesthand2.glb</div>
+
+  <div id="ui">
+    <div class="row">
+      <button id="btnCam">Camera Start</button>
+      <button id="btnCamStop">Camera Stop</button>
+    </div>
+    <div class="row">
+      <button onclick="goFrame(0)">EGG</button>
+      <button onclick="goFrame(10)">MINI OPEN</button>
+      <button onclick="goFrame(15)">LOCK</button>
+      <button onclick="goFrame(20)">FIT</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const GLB_NAME = "animetesthand2.glb";
+
+const video = document.getElementById("video");
+const badge = document.getElementById("badge");
+
+let stream = null;
+let cameraOn = false;
+
+// ===== Babylon (最小) =====
+const canvas = document.getElementById("renderCanvas");
+const engine = new BABYLON.Engine(canvas, true, {
+  preserveDrawingBuffer:false,
+  stencil:false,
+  disableWebGL2Support:false
+});
+const scene  = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(0,0,0,0); // videoが下にあるので透明
+
+const camera = new BABYLON.ArcRotateCamera(
+  "cam",
+  Math.PI/2,
+  Math.PI/2.2,
+  3.0,
+  BABYLON.Vector3.Zero(),
+  scene
+);
+// UI操作だけで十分なので attachControl は false 推奨（暴発防止）
+camera.attachControl(canvas, false);
+
+new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0,1,0), scene);
+
+let anim = null;
+
+// GLBは1回だけロード
+BABYLON.SceneLoader.ImportMeshAsync(null, "./", GLB_NAME, scene).then(res=>{
+  if(scene.animationGroups.length){
+    anim = scene.animationGroups[0];
+    anim.stop();
+    anim.goToFrame(0);
+  }
+
+  // autoFit：モデルが極小/極大でも見えるように自動調整
+  const meshes = res.meshes.filter(m=>m.getTotalVertices && m.getTotalVertices()>0);
+  if(meshes.length){
+    const b = meshes[0].getHierarchyBoundingVectors(true);
+    const sizeVec = b.max.subtract(b.min);
+    const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
+    const scale = 1.8 / (maxDim || 1);
+    meshes.forEach(m=>m.scaling.scaleInPlace(scale));
+  }
+
+  badge.textContent = `Camera: ${cameraOn ? "ON" : "OFF"} / GLB: ${GLB_NAME}`;
+}).catch(e=>{
+  badge.textContent = `GLB load failed: ${GLB_NAME}`;
+  console.error(e);
+});
+
+// フレーム遷移（再生しない）
+window.goFrame = function(f){
+  if(!anim) return;
+  anim.stop();
+  anim.goToFrame(f);
+};
+
+// ===== Camera control (軽量：Start/Stop) =====
+async function startCamera(){
+  if(cameraOn) return;
+
+  try{
+    // exactは端末で落ちることがあるので2段フォールバック
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:{ exact:"environment" } }, audio:false
+      });
+    }catch{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:"environment" }, audio:false
+      });
+    }
+
+    video.srcObject = stream;
+    await video.play();
+
+    video.style.display = "block";
+    cameraOn = true;
+    badge.textContent = `Camera: ON / GLB: ${GLB_NAME}`;
+  }catch(e){
+    console.error(e);
+    alert("Camera start failed. 権限/HTTPS/端末設定をご確認ください。");
+  }
+}
+
+function stopCamera(){
+  if(!cameraOn) return;
+
+  try{
+    const tracks = stream?.getTracks?.() || [];
+    tracks.forEach(t=>t.stop());
+  }catch(e){
+    console.error(e);
+  }
+
+  stream = null;
+  video.srcObject = null;
+  video.style.display = "none";
+  cameraOn = false;
+
+  badge.textContent = `Camera: OFF / GLB: ${GLB_NAME}`;
+}
+
+document.getElementById("btnCam").addEventListener("click", startCamera);
+document.getElementById("btnCamStop").addEventListener("click", stopCamera);
+
+engine.runRenderLoop(()=>scene.render());
+window.addEventListener("resize",()=>engine.resize());
+</script>
+</body>
+</html>
